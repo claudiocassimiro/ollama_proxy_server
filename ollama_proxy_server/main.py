@@ -1,13 +1,4 @@
-"""
-project: ollama_proxy_server
-file: main.py
-author: ParisNeo
-description: This is a proxy server that adds a security layer to one or multiple ollama servers and routes the requests to the right server in order to minimize the charge of the server.
-"""
-
-import configparser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-import json
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 from queue import Queue
@@ -17,6 +8,8 @@ from ascii_colors import ASCIIColors
 from pathlib import Path
 import csv
 import datetime
+import json
+import configparser
 
 def get_config(filename):
     config = configparser.ConfigParser()
@@ -37,8 +30,6 @@ def get_authorized_users(filename):
         except:
             ASCIIColors.red(f"User entry broken:{line.strip()}")
     return authorized_users
-
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -72,6 +63,9 @@ def main():
 
         def _send_response(self, response):
             self.send_response(response.status_code)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
             for key, value in response.headers.items():
                 if key.lower() not in ['content-length', 'transfer-encoding', 'content-encoding']:
                     self.send_header(key, value)
@@ -87,6 +81,13 @@ def main():
             except BrokenPipeError:
                 pass
 
+        def do_OPTIONS(self):
+            self.send_response(204)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            self.end_headers()
+
         def do_GET(self):
             self.log_request()
             self.proxy()
@@ -97,14 +98,12 @@ def main():
 
         def _validate_user_and_key(self):
             try:
-                # Extract the bearer token from the headers
                 auth_header = self.headers.get('Authorization')
                 if not auth_header or not auth_header.startswith('Bearer '):
                     return False
-                token       = auth_header.split(' ')[1]
-                user, key   = token.split(':')
+                token = auth_header.split(' ')[1]
+                user, key = token.split(':')
                 
-                # Check if the user and key are in the list of authorized users
                 if authorized_users.get(user) == key:
                     self.user = user
                     return True
@@ -119,7 +118,6 @@ def main():
             if not deactivate_security and not self._validate_user_and_key():
                 ASCIIColors.red(f'User is not authorized')
                 client_ip, client_port = self.client_address
-                # Extract the bearer token from the headers
                 auth_header = self.headers.get('Authorization')
                 if not auth_header or not auth_header.startswith('Bearer '):
                     self.add_access_log_entry(event='rejected', user="unknown", ip_address=client_ip, access="Denied", server="None", nb_queued_requests_on_server=-1, error="Authentication failed")
@@ -137,19 +135,17 @@ def main():
             if self.command == "POST":
                 content_length = int(self.headers['Content-Length'])
                 post_data = self.rfile.read(content_length)
-                post_params = post_data# parse_qs(post_data.decode('utf-8'))
+                post_params = post_data
             else:
                 post_params = {}
 
 
-            # Find the server with the lowest number of queue entries.
             min_queued_server = servers[0]
             for server in servers:
                 cs = server[1]
                 if cs['queue'].qsize() < min_queued_server[1]['queue'].qsize():
                     min_queued_server = server
 
-            # Apply the queuing mechanism only for a specific endpoint.
             if path == '/api/generate' or path == '/api/chat':
                 que = min_queued_server[1]['queue']
                 client_ip, client_port = self.client_address
@@ -170,7 +166,6 @@ def main():
                     que.get_nowait()
                     self.add_access_log_entry(event="gen_done",user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())                    
             else:
-                # For other endpoints, just mirror the request.
                 response = requests.request(self.command, min_queued_server[1]['url'] + path, params=get_params, data=post_params)
                 self._send_response(response)
 
@@ -179,9 +174,10 @@ def main():
 
 
     print('Starting server')
-    server = ThreadedHTTPServer(('', args.port), RequestHandler)  # Set the entry port here.
+    server = ThreadedHTTPServer(('', args.port), RequestHandler)
     print(f'Running server on port {args.port}')
     server.serve_forever()
 
 if __name__ == "__main__":
     main()
+
